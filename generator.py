@@ -5,18 +5,19 @@ from torchvision import datasets, transforms
 from torchvision.utils import save_image
 import matplotlib.pyplot as plt
 import os
+import numpy as np
 
-# DataLoader for CIFAR-10
+# CIFAR-10 dataloader
 def get_dataloader(batch_size):
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) # 归一化
     ])
     dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return dataloader
 
-# Generator for GAN
+# GAN 生成器
 class Generator(nn.Module):
     def __init__(self, noise_dim, img_channels):
         super(Generator, self).__init__()
@@ -35,7 +36,7 @@ class Generator(nn.Module):
         x = self.model(x)
         return x.view(x.size(0), 3, 32, 32)
 
-# Discriminator for GAN
+# GAN 判别器
 class Discriminator(nn.Module):
     def __init__(self, img_channels):
         super(Discriminator, self).__init__()
@@ -54,7 +55,7 @@ class Discriminator(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-# Training GAN
+# 训练 GAN
 def train_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, criterion, noise_dim, device, epochs):
     generator.train()
     discriminator.train()
@@ -67,7 +68,7 @@ def train_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, cr
             real_images = real_images.to(device)
             batch_size = real_images.size(0)
 
-            # Train Discriminator
+            # 训练判别器
             noise = torch.randn(batch_size, noise_dim).to(device)
             fake_images = generator(noise)
 
@@ -81,7 +82,7 @@ def train_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, cr
             d_loss.backward()
             d_optimizer.step()
 
-            # Train Generator
+            # 训练生成器
             g_optimizer.zero_grad()
             g_loss = criterion(discriminator(fake_images), real_labels)
             g_loss.backward()
@@ -92,14 +93,14 @@ def train_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, cr
 
         print(f"Epoch [{epoch+1}/{epochs}] - D Loss: {d_loss.item():.4f}, G Loss: {g_loss.item():.4f}")
 
-        # Save some generated images for visualization
+        # 每 10 epochs 保存一组生成图片
         if (epoch + 1) % 10 == 0:
             if os.path.exists('output') == False:
                 os.makedirs('output')
             save_image(fake_images[:25], f'output/epoch_{epoch+1}.png', nrow=5, normalize=True)
     return g_losses, d_losses
 
-# time-weighted EMA
+# 移动平均便于判断loss变化趋势
 def time_weighted_ema(data, alpha):
     ema = np.zeros_like(data)
     ema[0] = data[0]
@@ -108,35 +109,31 @@ def time_weighted_ema(data, alpha):
     return ema
 
 if __name__ == "__main__":
-    # Hyperparameters
+
     batch_size = 64
     noise_dim = 100
     img_channels = 3
     epochs = 200
-    lr = 0.00002
+    g_lr = 0.0001
+    d_lr = 0.000005
 
-    # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Prepare DataLoader
     dataloader = get_dataloader(batch_size)
 
-    # Initialize models
     generator = Generator(noise_dim, img_channels).to(device)
     discriminator = Discriminator(img_channels).to(device)
 
-    # Loss and optimizers
     criterion = nn.BCELoss()
-    g_optimizer = optim.Adam(generator.parameters(), lr=lr)
-    d_optimizer = optim.Adam(discriminator.parameters(), lr=lr)
+    g_optimizer = optim.Adam(generator.parameters(), lr=g_lr)
+    d_optimizer = optim.Adam(discriminator.parameters(), lr=d_lr)
 
-    # Train GAN
     g_losses, d_losses = train_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, criterion, noise_dim, device, epochs)
 
-    # Visualize losses
+    # 可视化
 
     # 平滑参数
-    alpha = 0.02
+    alpha = 0.005
     g_losses_smoothed = time_weighted_ema(g_losses, alpha)
     d_losses_smoothed = time_weighted_ema(d_losses, alpha)
 
@@ -145,17 +142,17 @@ if __name__ == "__main__":
     fig, ax1 = plt.subplots()
 
     # 绘制生成器损失
-    ax1.fill_between(iterations, g_losses, color='#FDB462', alpha=0.3, label='Generator Loss (Actual)')  # 浅橙色阴影
-    ax1.plot(iterations, g_losses_smoothed, color='#D95F02', linewidth=2, label='Generator Loss (Smoothed)')  # 橙色主线
+    ax1.plot(g_losses, color='#FDB462', alpha=0.3, label='Generator Loss (Actual)')
+    ax1.plot(g_losses_smoothed, color='#D95F02', linewidth=2, label='Generator Loss (Smoothed)')
     ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('Generator Loss', color='#D95F02')  # 橙色标签
+    ax1.set_ylabel('Generator Loss', color='#D95F02')
     ax1.tick_params(axis='y', labelcolor='#D95F02')
 
     # 绘制判别器损失
     ax2 = ax1.twinx()
-    ax2.fill_between(iterations, d_losses, color='#B3B3FF', alpha=0.3, label='Discriminator Loss (Actual)')  # 浅紫色阴影
-    ax2.plot(iterations, d_losses_smoothed, color='#7570B3', linewidth=2, label='Discriminator Loss (Smoothed)')  # 紫色主线
-    ax2.set_ylabel('Discriminator Loss', color='#7570B3')  # 紫色标签
+    ax2.plot(d_losses, color='#B3B3FF', alpha=0.3, label='Discriminator Loss (Actual)')
+    ax2.plot(d_losses_smoothed, color='#7570B3', linewidth=2, label='Discriminator Loss (Smoothed)')
+    ax2.set_ylabel('Discriminator Loss', color='#7570B3')
     ax2.tick_params(axis='y', labelcolor='#7570B3')
 
     # 添加标题和图例
