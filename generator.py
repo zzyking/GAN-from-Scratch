@@ -17,6 +17,15 @@ def get_dataloader(batch_size):
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return dataloader
 
+def get_conditional_dataloader(batch_size):
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5))
+    ])
+    dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    return dataloader, dataset.classes
+
 # GAN 生成器
 class Generator(nn.Module):
     def __init__(self, noise_dim, img_channels):
@@ -61,6 +70,35 @@ class CNNGenerator(nn.Module):
     def forward(self, z):
         out = self.l1(z)  # 先通过全连接层
         out = out.view(out.shape[0], 512, self.init_size, self.init_size)  # 重塑为 [batch_size, channels, height, width]
+        img = self.conv_blocks(out)
+        return img
+
+class ConditionalGenerator(nn.Module):
+    def __init__(self, noise_dim, img_channels, num_classes):
+        super(ConditionalGenerator, self).__init__()
+        self.label_embedding = nn.Embedding(num_classes, noise_dim)  # 嵌入标签
+        self.init_size = 4
+        self.l1 = nn.Sequential(
+            nn.Linear(noise_dim * 2, 512 * self.init_size * self.init_size)  # 噪声+标签
+        )
+        self.conv_blocks = nn.Sequential(
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.ConvTranspose2d(128, img_channels, kernel_size=4, stride=2, padding=1),
+            nn.Tanh()
+        )
+
+    def forward(self, z, labels):
+        label_embedding = self.label_embedding(labels)
+        input = torch.cat([z, label_embedding], dim=1)  # 拼接噪声和标签
+        out = self.l1(input)
+        out = out.view(out.shape[0], 512, self.init_size, self.init_size)
         img = self.conv_blocks(out)
         return img
 
@@ -110,6 +148,29 @@ class CNNDiscriminator(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+class ConditionalDiscriminator(nn.Module):
+    def __init__(self, img_channels, num_classes):
+        super(ConditionalDiscriminator, self).__init__()
+        self.label_embedding = nn.Embedding(num_classes, img_channels * 32 * 32)
+        self.model = nn.Sequential(
+            nn.Conv2d(img_channels + 1, 128, 4, 2, 1, bias=False),  # 图像+标签通道
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(128, 256, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(256, 512, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Flatten(),
+            nn.Linear(4 * 4 * 512, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x, labels):
+        label_embedding = self.label_embedding(labels).view(labels.size(0), 1, 32, 32)
+        input = torch.cat([x, label_embedding], dim=1)
+        return self.model(input)
+
 # 训练 GAN
 def train_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, criterion, noise_dim, device, epochs):
     generator.train()
@@ -155,6 +216,43 @@ def train_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, cr
             save_image(fake_images[:25], f'output/epoch_{epoch+1}.png', nrow=5, normalize=True)
     return g_losses, d_losses
 
+def train_conditional_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, criterion, noise_dim, device, num_classes, epochs):
+    for epoch in range(epochs):
+        for i, (real_images, labels) in enumerate(dataloader):
+            real_images = real_images.to(device)
+            labels = labels.to(device)
+            batch_size = real_images.size(0)
+
+            # 训练判别器
+            noise = torch.randn(batch_size, noise_dim).to(device)
+            fake_labels = torch.randint(0, num_classes, (batch_size,)).to(device)
+            fake_images = generator(noise, fake_labels)
+
+            real_labels = torch.ones(batch_size, 1).to(device)
+            fake_labels_tensor = torch.zeros(batch_size, 1).to(device)
+
+            d_optimizer.zero_grad()
+            real_loss = criterion(discriminator(real_images, labels), real_labels)
+            fake_loss = criterion(discriminator(fake_images.detach(), fake_labels), fake_labels_tensor)
+            d_loss = real_loss + fake_loss
+            d_loss.backward()
+            d_optimizer.step()
+
+            # 训练生成器
+            g_optimizer.zero_grad()
+            g_loss = criterion(discriminator(fake_images, fake_labels), real_labels)
+            g_loss.backward()
+            g_optimizer.step()
+
+        print(f"Epoch [{epoch+1}/{epochs}] - D Loss: {d_loss.item():.4f}, G Loss: {g_loss.item():.4f}")
+
+def generate_images(generator, class_id, num_samples, noise_dim, device):
+    noise = torch.randn(num_samples, noise_dim).to(device)
+    labels = torch.full((num_samples,), class_id, dtype=torch.long).to(device)
+    with torch.no_grad():
+        fake_images = generator(noise, labels)
+    return fake_images
+
 # 移动平均便于判断loss变化趋势
 def time_weighted_ema(data, alpha):
     ema = np.zeros_like(data)
@@ -184,6 +282,18 @@ if __name__ == "__main__":
     d_optimizer = optim.Adam(discriminator.parameters(), lr=d_lr)
 
     g_losses, d_losses = train_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, criterion, noise_dim, device, epochs)
+
+    '''
+    dataloader, class_names = get_conditional_dataloader(batch_size)
+
+    num_classes = len(class_names)
+    generator = ConditionalGenerator(noise_dim, img_channels, num_classes).to(device)
+    discriminator = ConditionalDiscriminator(img_channels, num_classes).to(device)
+
+    g_losses, d_losses = train_conditional_gan(
+        dataloader, generator, discriminator, g_optimizer, d_optimizer, criterion, noise_dim, device, num_classes, epochs
+    )
+    '''
 
     # 可视化
 
