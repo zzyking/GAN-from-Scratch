@@ -1,101 +1,178 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms
+import torchvision
+import torchvision.transforms as transforms
 from torchvision.utils import save_image
-import matplotlib.pyplot as plt
-import os
-import numpy as np
+from torch.utils.data import DataLoader, Dataset
 
-from model import ConditionalDiscriminator, ConditionalGenerator
-from utils import (
-    get_conditional_dataloader,
-    time_weighted_ema,
-    visualize
-)
+# 设备配置
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 训练 GAN
-def train_conditional_gan(dataloader, generator, discriminator, g_optimizer, d_optimizer, criterion, noise_dim, device, num_classes, epochs):
-    generator.train()
-    discriminator.train()
+# 超参数
+latent_dim = 100
+batch_size = 64
+epochs = 100
+lr = 0.0002
+num_classes = 10
+save_dir = 'generated_images'
 
-    g_losses = []
-    d_losses = []
+# 数据预处理
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
 
-    # 创建固定的噪声和标签用于观察训练变化
-    fixed_n_sample_per_class = 5
-    fixed_total_samples = fixed_n_sample_per_class * 10  # 10类
-    fixed_noise = torch.randn(fixed_total_samples, noise_dim).to(device)
-    fixed_labels = torch.tensor([[i]*fixed_n_sample_per_class for i in range(10)]).flatten().to(device)
+# 加载数据集
+train_dataset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
 
-    for epoch in range(epochs):
-        for i, (real_images, real_labels) in enumerate(dataloader):
-            real_images = real_images.to(device)
-            real_labels = real_labels.to(device)
-            batch_size = real_images.size(0)
+#cgan生成器
+class Generator(nn.Module):
+    def __init__(self, latent_dim, num_classes):
+        super(Generator, self).__init__()
 
-            # 训练判别器
-            real_labels_d = torch.ones(batch_size, 1).to(device)
-            fake_labels_d = torch.zeros(batch_size, 1).to(device)
+        # 标签嵌入层
+        self.label_embedding = nn.Embedding(num_classes, 10)  # 将类别嵌入到10维空间
 
-            d_optimizer.zero_grad()
-            real_loss = criterion(discriminator(real_images, real_labels), real_labels_d)
+        # 将嵌入后的标签和噪声连接起来的输入维度
+        input_dim = latent_dim + 10
 
-            noise = torch.randn(batch_size, noise_dim).to(device)
-            fake_images = generator(noise, real_labels)
+        self.model = nn.Sequential(
+            nn.ConvTranspose2d(input_dim, 256, kernel_size=4, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.Tanh()
+        )
 
-            fake_loss = criterion(discriminator(fake_images.detach(), real_labels), fake_labels_d)
-            d_loss = real_loss + fake_loss
-            d_loss.backward()
-            d_optimizer.step()
+    def forward(self, z, labels):
+        # 嵌入标签
+        label_embedding = self.label_embedding(labels)
+        # 调整标签维度以便与噪声连接
+        label_embedding = label_embedding.unsqueeze(2).unsqueeze(3)  # [B, 50, 1, 1]
+        # 连接噪声和标签
+        z = torch.cat([z, label_embedding], dim=1)
+        return self.model(z)
 
-            # 训练生成器
-            g_optimizer.zero_grad()
-            g_loss = criterion(discriminator(fake_images, real_labels), real_labels_d)
-            g_loss.backward()
-            g_optimizer.step()
+#cgan判别器
+class Discriminator(nn.Module):
+    def __init__(self, num_classes):
+        super(Discriminator, self).__init__()
 
-            # 记录损失
-            g_losses.append(g_loss.item())
-            d_losses.append(d_loss.item())
+        # 标签嵌入层
+        self.label_embedding = nn.Embedding(num_classes, 50)
 
-        print(f"Epoch [{epoch+1}/{epochs}] - D Loss: {d_loss.item():.4f}, G Loss: {g_loss.item():.4f}")
-        
-        # 每隔10个epoch生成并保存图片
-        if (epoch + 1) % 10 == 0:
-            with torch.no_grad():
-                gen_imgs = generator(fixed_noise, fixed_labels)
-                # 确保输出目录存在
-                if not os.path.exists('output'):
-                    os.makedirs('output')
-                save_image(gen_imgs.data, f"output/epoch_{epoch + 1}.png", nrow=fixed_n_sample_per_class, normalize=True)
+        # 标签投影层
+        self.label_proj = nn.Sequential(
+            nn.Linear(50, 32 * 32),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+
+        self.model = nn.Sequential(
+            # 输入通道为3+1（图像3通道 + 条件信息1通道）
+            nn.Conv2d(4, 64, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(256, 1, kernel_size=4, stride=1, padding=0, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x, labels):
+        # 处理标签信息
+        embedded_labels = self.label_embedding(labels)
+        projected_labels = self.label_proj(embedded_labels)
+        # 将投影后的标签重塑为条件通道
+        projected_labels = projected_labels.view(-1, 1, 32, 32)
+
+        # 将条件信息与图像连接
+        x = torch.cat([x, projected_labels], dim=1)
+        return self.model(x).view(-1, 1)
+
+
+# 损失函数
+adversarial_loss = nn.BCELoss()
+
+# 初始化生成器和判别器
+generator = Generator(latent_dim, num_classes).to(device)
+discriminator = Discriminator(num_classes).to(device)
+
+# 优化器
+optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
+optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
+
+def train_gan(generator, discriminator, optimizer_G, optimizer_D, adversarial_loss, train_loader, epochs, latent_dim, save_dir, device):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
     
-    return g_losses, d_losses
+    for epoch in range(epochs):
+        for i, (imgs, labels) in enumerate(train_loader):
+            # 配置真实和假标签
+            real_labels_d = torch.ones(imgs.size(0), 1).to(device)
+            fake_labels_d = torch.zeros(imgs.size(0), 1).to(device)
+            
+            # 训练判别器
+            optimizer_D.zero_grad()
+            
+            # 真实图像
+            real_imgs = imgs.to(device)
+            real_labels = labels.to(device)
+            real_validity = discriminator(real_imgs, real_labels)
+            d_real_loss = adversarial_loss(real_validity, real_labels_d)
+            
+            # 假图像
+            noise = torch.randn(imgs.size(0), latent_dim, 1, 1).to(device)
+            fake_imgs = generator(noise, real_labels)
+            fake_validity = discriminator(fake_imgs.detach(), real_labels)
+            d_fake_loss = adversarial_loss(fake_validity, fake_labels_d)
+            
+            # 总判别器损失
+            d_loss = (d_real_loss + d_fake_loss) / 2
+            d_loss.backward()
+            optimizer_D.step()
+            
+            # 训练生成器
+            optimizer_G.zero_grad()
+            # 生成图像
+            noise = torch.randn(imgs.size(0), latent_dim, 1, 1).to(device)
+            gen_labels = torch.randint(0, num_classes, (imgs.size(0),)).to(device)
+            gen_imgs = generator(noise, gen_labels)
+            # 判别器判断生成图像
+            validity = discriminator(gen_imgs, gen_labels)
+            # 生成器损失
+            g_loss = adversarial_loss(validity, real_labels_d)
+            g_loss.backward()
+            optimizer_G.step()
+            
+            print(f"[Epoch {epoch}/{epochs}] [Batch {i}/{len(train_loader)}] [D loss: {d_loss.item()}] [G loss: {g_loss.item()}]")
+        
+        # 每10个epoch保存一次生成的图片
+        if (epoch + 1) % 10 == 0:
+            save_generated_images(generator, epoch, latent_dim, save_dir, device)
 
+def save_generated_images(generator, epoch, latent_dim, save_dir, device, num_classes=10, num_images_per_class=5):
+    generator.eval()
+    with torch.no_grad():
+        for class_id in range(num_classes):
+            noise = torch.randn(num_images_per_class, latent_dim, 1, 1).to(device)
+            labels = torch.full((num_images_per_class,), class_id, dtype=torch.long).to(device)
+            generated_imgs = generator(noise, labels)
+            save_image(generated_imgs.data, f'{save_dir}/epoch_{epoch+1}.png', nrow=5, normalize=True)
+    print(f"Images saved at epoch {epoch + 1}")
+    generator.train()
 
-
-if __name__ == "__main__":
-    batch_size = 128
-    noise_dim = 100
-    img_channels = 3
-    epochs = 100
-    g_lr = 0.0002
-    d_lr = 0.00001
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    dataloader, class_names = get_conditional_dataloader(batch_size)
-    num_classes = len(class_names)
-
-    generator = ConditionalGenerator(noise_dim, img_channels, num_classes).to(device)
-    discriminator = ConditionalDiscriminator(img_channels, num_classes).to(device)
-
-    criterion = nn.BCELoss()
-    g_optimizer = optim.Adam(generator.parameters(), lr=g_lr)
-    d_optimizer = optim.Adam(discriminator.parameters(), lr=d_lr)
-
-    g_losses, d_losses = train_conditional_gan(
-        dataloader, generator, discriminator, g_optimizer, d_optimizer, criterion, noise_dim, device, num_classes, epochs
-    )
-
-    visualize(g_losses, d_losses, save_dir="loss_curve_conditional.png")
+train_gan(generator, discriminator, optimizer_G, optimizer_D, adversarial_loss, train_loader, epochs, latent_dim, save_dir, device)
