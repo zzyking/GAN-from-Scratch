@@ -36,10 +36,10 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
 
         # 标签嵌入层
-        self.label_embedding = nn.Embedding(num_classes, 10)  # 将类别嵌入到10维空间
+        self.label_embedding = nn.Embedding(num_classes, 20)  # 将类别嵌入到10维空间
 
         # 将嵌入后的标签和噪声连接起来的输入维度
-        input_dim = latent_dim + 10
+        input_dim = latent_dim + 20
 
         self.model = nn.Sequential(
             nn.ConvTranspose2d(input_dim, 256, kernel_size=4, stride=1, padding=0, bias=False),
@@ -161,17 +161,19 @@ def train_gan(generator, discriminator, optimizer_G, optimizer_D, adversarial_lo
             print(f"[Epoch {epoch}/{epochs}] [Batch {i}/{len(train_loader)}] [D loss: {d_loss.item()}] [G loss: {g_loss.item()}]")
         
         # 每10个epoch保存一次生成的图片
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 1 == 0:
             save_generated_images(generator, epoch, latent_dim, save_dir, device)
 
 def save_generated_images(generator, epoch, latent_dim, save_dir, device, num_classes=10, num_images_per_class=5):
     generator.eval()
+    images = []
     with torch.no_grad():
         for class_id in range(num_classes):
             noise = torch.randn(num_images_per_class, latent_dim, 1, 1).to(device)
             labels = torch.full((num_images_per_class,), class_id, dtype=torch.long).to(device)
             generated_imgs = generator(noise, labels)
-            save_image(generated_imgs.data, f'{save_dir}/epoch_{epoch+1}.png', nrow=5, normalize=True)
+            images.extend(generated_imgs)
+        save_image(images, f'{save_dir}/epoch_{epoch+1}.png', nrow=5, normalize=True)
     print(f"Images saved at epoch {epoch + 1}")
     generator.train()
 
