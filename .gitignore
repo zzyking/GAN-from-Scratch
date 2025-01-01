@@ -2,3 +2,4 @@ data/*
 output/*
 代码
 *.pyc
+generated_images

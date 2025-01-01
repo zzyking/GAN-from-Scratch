@@ -2,6 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
+import numpy as np
 
 # CIFAR-10 dataloader
 def get_dataloader(batch_size):
