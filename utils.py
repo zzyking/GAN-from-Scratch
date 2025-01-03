@@ -23,6 +23,15 @@ def get_conditional_dataloader(batch_size):
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return dataloader, dataset.classes
 
+def get_test_dataloader(batch_size):
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) # 归一化
+    ])
+    dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    return dataloader
+
 # 移动平均便于判断loss变化趋势
 def time_weighted_ema(data, alpha):
     ema = np.zeros_like(data)
@@ -32,7 +41,7 @@ def time_weighted_ema(data, alpha):
     return ema
 
 # 可视化
-def visualize(g_losses, d_losses, save_dir='loss_curve.png'):
+def visualize_loss(g_losses, d_losses, save_dir='loss_curve.png'):
 
     # 平滑参数
     alpha = 0.005
@@ -64,4 +73,15 @@ def visualize(g_losses, d_losses, save_dir='loss_curve.png'):
 
     # 保存和显示图像
     plt.savefig(save_dir)
-    plt.show()
+
+def plot_fid_scores(fid_scores, save_dir="fid_scores.png"):
+    epochs = [x[0] for x in fid_scores]
+    fids = [x[1] for x in fid_scores]
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, fids, marker='o', linestyle='-', color='b')
+    plt.xlabel("Epoch")
+    plt.ylabel("FID Score")
+    plt.title("FID Score Over Epochs")
+    plt.grid(True)
+    plt.savefig(save_dir)

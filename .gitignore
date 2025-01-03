@@ -3,3 +3,9 @@ output/*
 代码
 *.pyc
 generated_images
+*.png
+!./loss_curve.png
+!./loss_curve_conditional.png
+!./fid_scores.png
+hub
+*.npy
