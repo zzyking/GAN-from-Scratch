@@ -11,7 +11,7 @@ import scipy
 
 os.environ['TORCH_HOME'] = '/raid_sdi/home/zzy/GAN-from-Scratch'
 
-from model import ConditionalDiscriminator, ConditionalGenerator
+from model import ConditionalDiscriminator, ConditionalGenerator, rcDiscriminator, rcGenerator
 from utils import (
     get_conditional_dataloader,
     get_test_dataloader,
@@ -92,17 +92,20 @@ def train_conditional_gan(dataloader, test_dataloader, generator, discriminator,
                 if not os.path.exists(output_dir):
                     os.makedirs(output_dir)
                 save_image(gen_imgs.data, f"{output_dir}/epoch_{epoch + 1}.png", nrow=fixed_n_sample_per_class, normalize=True)
-
+            
             # 计算 FID
             z = torch.randn(eval_samples, noise_dim, 1, 1, device=device)
             random_labels = torch.randint(0, 10, (eval_samples,)).to(device)
             fake_imgs = generator(z, random_labels)
             generated_features = get_inception_features(fake_imgs, inception, device=device)
 
+            torch.cuda.empty_cache()
+
             fid_score = calculate_fid(real_features, generated_features)
             fid_scores.append((epoch + 1, fid_score))
             print(f"Epoch {epoch + 1}: FID: {fid_score:.2f}")
             torch.cuda.empty_cache()
+            
             generator.train()
         torch.cuda.empty_cache()
     return g_losses, d_losses, fid_scores
@@ -112,13 +115,12 @@ def train_conditional_gan(dataloader, test_dataloader, generator, discriminator,
 if __name__ == "__main__":
     batch_size = 64
     noise_dim = 100
-    g_label_dim = 1
-    d_label_dim = 50
+    g_label_dim = 5
     img_channels = 3
-    epochs = 100
+    epochs = 150
     g_lr = 0.0002
     d_lr = 0.00003
-    output_dir = "test_g_dim_1"
+    output_dir = "test_residual_64_128_256"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -126,8 +128,8 @@ if __name__ == "__main__":
     test_dataloader = get_test_dataloader(batch_size)
     num_classes = len(class_names)
 
-    generator = ConditionalGenerator(g_label_dim, noise_dim, img_channels, num_classes).to(device)
-    discriminator = ConditionalDiscriminator(d_label_dim, img_channels, num_classes).to(device)
+    generator = rcGenerator(g_label_dim, noise_dim, img_channels, num_classes).to(device)
+    discriminator = rcDiscriminator(img_channels, num_classes).to(device)
 
     criterion = nn.BCELoss()
     g_optimizer = optim.Adam(generator.parameters(), lr=g_lr)

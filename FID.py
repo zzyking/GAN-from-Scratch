@@ -9,7 +9,7 @@ def get_inception_features(images, inception_model, batch_size=32, device='cuda'
     features = []
     with torch.no_grad():
         for i in range(0, len(images), batch_size):
-            batch = images[i:i + 32].to(device)
+            batch = images[i:i + batch_size].to(device)
             batch = F.interpolate(batch, size=(299, 299), mode='bilinear', align_corners=False).to(device)
             batch_features = inception_model(batch)
             features.append(batch_features.cpu().numpy())

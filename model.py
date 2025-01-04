@@ -125,13 +125,10 @@ class ConditionalGenerator(nn.Module):
 
 # GAN 条件判别器
 class ConditionalDiscriminator(nn.Module):
-    def __init__(self, label_dim, img_channels, num_classes):
+    def __init__(self, img_channels, num_classes):
         super(ConditionalDiscriminator, self).__init__()
         self.label_embedding = nn.Embedding(num_classes, 32 * 32)
-        self.label_proj = nn.Sequential(
-            nn.Linear(label_dim, 32 * 32),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
+
         self.model = nn.Sequential(
             nn.Conv2d(img_channels + 1, 64, 4, 2, 1, bias=False),  # 图像+标签通道
             nn.LeakyReLU(0.2, inplace=True),
@@ -148,7 +145,74 @@ class ConditionalDiscriminator(nn.Module):
     def forward(self, x, labels):
         # 将标签嵌入为 [batch_size, 1, 32, 32]
         label_embedding = self.label_embedding(labels).view(-1, 1, 32, 32)
-        # projected_labels = self.label_proj(label_embedding).view(-1, 1, 32, 32)
-        # 拼接标签嵌入与图像
         input = torch.cat([x, label_embedding], dim=1)
+        return self.model(input).view(-1, 1)
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels):
+        super(ResidualBlock, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(),
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(in_channels)
+        )
+    
+    def forward(self, x):
+        return x + self.conv(x)
+
+
+class rcGenerator(nn.Module):
+    def __init__(self, label_dim, noise_dim, img_channels, num_classes):
+        super(rcGenerator, self).__init__()
+        self.label_embedding = nn.Embedding(num_classes, label_dim)
+        input_dim = noise_dim + label_dim
+        
+        self.model = nn.Sequential(
+            nn.ConvTranspose2d(input_dim, 256, kernel_size=4, stride=1, padding=0),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            ResidualBlock(256), 
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            ResidualBlock(128),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            ResidualBlock(64),
+            nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1),
+            nn.Tanh()
+        )
+    
+    def forward(self, z, labels):
+        label_embedding = self.label_embedding(labels).unsqueeze(2).unsqueeze(3)
+        input = torch.cat([z, label_embedding], dim=1)
+        return self.model(input)
+
+class rcDiscriminator(nn.Module):
+    def __init__(self, img_channels, num_classes):
+        super(rcDiscriminator, self).__init__()
+        self.label_embedding = nn.Embedding(num_classes, 32 * 32)
+        
+        self.model = nn.Sequential(
+            nn.Conv2d(img_channels + 1, 64, kernel_size=4, stride=2, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            ResidualBlock(64),
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+            ResidualBlock(128),
+            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+            ResidualBlock(256),
+            nn.Conv2d(256, 1, kernel_size=4, stride=1, padding=0),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x, labels):
+        label_embedding = self.label_embedding(labels).view(-1, 1, 32, 32)
+        input = torch.cat((x, label_embedding), dim=1)
         return self.model(input).view(-1, 1)
